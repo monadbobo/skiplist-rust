@@ -1,5 +1,3 @@
-Here's a draft README for your Rust implementation of LevelDB's SkipList:
-
 # Rust SkipList
 
 A Rust implementation of the SkipList data structure, inspired by LevelDB's SkipList. This project provides a
