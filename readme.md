@@ -40,7 +40,7 @@ fn main() {
     assert!(!list.contains(&3));
 
     // Iterate over the list
-    let mut iter = list.iter();
+    let mut iter = SkipListIterator::new(&list);
     while iter.valid() {
         println!("Key: {}", iter.key());
         iter.next();
@@ -59,6 +59,7 @@ fn main() {
 
 ### `SkipListIterator<K>`
 
+- `new(list: &SkipList<K>) -> SkipListIterator<K>`: Create a new iterator over a SkipList
 - `valid(&self) -> bool`: Check if the iterator is pointing to a valid node
 - `key(&self) -> &K`: Get the key of the current node
 - `next(&mut self)`: Move to the next node
