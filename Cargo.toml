@@ -6,6 +6,7 @@ license = "MIT"
 keywords = ["data-structure", "unsafe", "lockless"]
 authors = ["Simon Liu"]
 documentation = "readme.md"
+description = "A lockless skiplist implementation in Rust"
 
 [dependencies]
 rand = "0.8.5"
