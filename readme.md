@@ -27,7 +27,7 @@ Add this to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-skiplist-rust = "0.1.0"
+skiplist-rust = "0.2.0"
 ```
 
 Then you can use the SkipList in your Rust code:
