@@ -1,3 +1,5 @@
+mod arena;
+
 use std::fmt::Debug;
 use std::iter::Iterator;
 use std::ptr;
@@ -5,6 +7,7 @@ use std::ptr::{null_mut, NonNull};
 use std::sync::atomic::{AtomicPtr, Ordering};
 use rand::{Rng, SeedableRng};
 use rand::rngs::StdRng;
+use crate::arena::Arena;
 
 const MAX_HEIGHT: usize = 12;
 const K_BRANCHING: usize = 4;
@@ -93,24 +96,31 @@ pub struct SkipList<K: Ord + Debug + Default> {
     head: NonNull<Node<K>>,
     max_height: std::sync::atomic::AtomicUsize,
     rnd: StdRng,
+    arena: Arena,
 }
 
 unsafe impl<K: Ord + Debug + Default + Send> Send for SkipList<K> {}
 unsafe impl<K: Ord + Debug + Default + Sync> Sync for SkipList<K> {}
 
-impl<K: Ord + Debug + Default> Default for SkipList<K> {
-    fn default() -> Self {
-        Self::new()
-    }
-}
+// impl<K: Ord + Debug + Default> Default for SkipList<K> {
+//     fn default() -> Self {
+//         Self::new()
+//     }
+// }
+
 impl<K: Ord + Debug + Default> SkipList<K> {
-    pub fn new() -> SkipList<K> {
-        let head = Box::new(Node::new(K::default(), MAX_HEIGHT));
-        let head_ptr = NonNull::from(Box::leak(head));
+    pub fn new(mut arena: Arena) -> SkipList<K> {
+        let head = unsafe {
+            let layout = std::alloc::Layout::new::<Node<K>>();
+            let ptr = arena.allocate(layout.size()) as *mut Node<K>;
+            ptr::write(ptr, Node::new(K::default(), MAX_HEIGHT));
+            NonNull::new_unchecked(ptr)
+        };
         let mut s = SkipList {
-            head: head_ptr,
+            head,
             max_height: std::sync::atomic::AtomicUsize::new(1),
             rnd: StdRng::seed_from_u64(0xdeadbeef),
+            arena,
         };
 
         for i in 0..MAX_HEIGHT {
@@ -221,12 +231,18 @@ impl<K: Ord + Debug + Default> SkipList<K> {
             self.max_height.store(height, Ordering::Relaxed);
         }
 
-        let new_node = Box::new(Node::new(key, height));
-        let new_node_ptr = Box::leak(new_node);
+        let new_node = unsafe {
+            let layout = std::alloc::Layout::new::<Node<K>>();
+            let ptr = self.arena.allocate(layout.size()) as *mut Node<K>;
+            ptr::write(ptr, Node::new(key, height));
+            &mut *ptr
+        };
+        //        let new_node = Box::new(Node::new(key, height));
+        //        let new_node_ptr = Box::leak(new_node);
         for (i, p) in prev.iter().enumerate().take(height) {
             unsafe {
-                new_node_ptr.no_barrier_set_next(i, p.as_ref().unwrap().no_barrier_next(i));
-                p.as_ref().unwrap().set_next(i, new_node_ptr);
+                new_node.no_barrier_set_next(i, p.as_ref().unwrap().no_barrier_next(i));
+                p.as_ref().unwrap().set_next(i, new_node);
             }
         }
     }
@@ -238,10 +254,12 @@ mod tests {
     use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
     use std::thread;
     use rand::{random, Rng, SeedableRng};
+    use crate::arena::Arena;
     use super::{SkipList, SkipListIterator};
     #[test]
     fn test_empty() {
-        let list = super::SkipList::new();
+        let arena = Arena::new();
+        let list = super::SkipList::new(arena);
         assert_eq!(list.contains(&10), false);
 
         let mut iter = SkipListIterator::new(&list);
@@ -260,7 +278,8 @@ mod tests {
         let r = 5000;
         let mut rnd = rand::thread_rng();
         let mut keys = std::collections::btree_set::BTreeSet::new();
-        let mut list = super::SkipList::new();
+        let arena = Arena::new();
+        let mut list = super::SkipList::new(arena);
 
         for _ in 0..r {
             let key = rnd.gen_range(0..r);
@@ -403,9 +422,10 @@ mod tests {
 
     impl ConcurrentTest {
         fn new() -> Self {
+            let arena = Arena::new();
             ConcurrentTest {
                 current: State::new(),
-                list: SkipList::new(),
+                list: SkipList::new(arena),
             }
         }
 

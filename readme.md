@@ -12,6 +12,16 @@ concurrent, lock-free SkipList implementation that can be used for efficient key
 - Iterator support for traversal
 - Configurable maximum height and branching factor
 - Written in safe Rust with minimal unsafe code
+- Memory management through a shared Arena allocator
+- No explicit delete operation (following LevelDB's design)
+
+## Memory Management
+
+The SkipList uses a shared `Arena` for memory allocation. This means:
+
+- All nodes are allocated from the Arena
+- There's no need for manual memory deallocation
+- The entire SkipList is deallocated when the Arena is dropped
 
 ## Usage
 
@@ -28,7 +38,8 @@ Then you can use the SkipList in your Rust code:
 use skiplist_rust::SkipList;
 
 fn main() {
-    let mut list = SkipList::new();
+    let arena = Arena::new();
+    let mut list = SkipList::new(arena);
 
     // Insert some values
     list.insert(5);
@@ -50,9 +61,16 @@ fn main() {
 
 ## API
 
+### `Arena`
+
+- `new() -> Arena`: Create a new Arena
+- `allocate(bytes: usize) -> *mut u8`: Allocate memory of the specified size
+- `allocate_aligned(bytes: usize) -> *mut u8`: Allocate memory of the specified size with alignment
+- `memory_usage(&self) -> usize`: Get the current memory usage of the arena
+
 ### `SkipList<K>`
 
-- `new() -> SkipList<K>`: Create a new SkipList
+- `new(arena: Arena) -> SkipList<K>`: Create a new SkipList
 - `insert(key: K)`: Insert a key into the SkipList
 - `contains(&key: &K) -> bool`: Check if a key exists in the SkipList
 - `iter(&self) -> SkipListIterator<K>`: Get an iterator over the SkipList
