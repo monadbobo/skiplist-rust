@@ -237,8 +237,6 @@ impl<K: Ord + Debug + Default> SkipList<K> {
             ptr::write(ptr, Node::new(key, height));
             &mut *ptr
         };
-        //        let new_node = Box::new(Node::new(key, height));
-        //        let new_node_ptr = Box::leak(new_node);
         for (i, p) in prev.iter().enumerate().take(height) {
             unsafe {
                 new_node.no_barrier_set_next(i, p.as_ref().unwrap().no_barrier_next(i));
