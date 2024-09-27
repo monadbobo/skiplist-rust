@@ -106,6 +106,7 @@ impl Drop for Arena {
     }
 }
 
+#[cfg(test)]
 mod test {
     use std::cmp;
     use rand::prelude::StdRng;
