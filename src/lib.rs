@@ -1,10 +1,12 @@
-mod arena;
+pub mod arena;
 
+use std::cell::UnsafeCell;
 use std::fmt::Debug;
 use std::iter::Iterator;
 use std::ptr;
 use std::ptr::{null_mut, NonNull};
 use std::sync::atomic::{AtomicPtr, Ordering};
+use std::sync::{Arc, Mutex};
 use rand::{Rng, SeedableRng};
 use rand::rngs::StdRng;
 use crate::arena::Arena;
@@ -46,11 +48,11 @@ impl<K> Node<K> {
 
 pub struct SkipListIterator<'a, K: Ord + Debug + Default> {
     node: *mut Node<K>,
-    list: &'a SkipList<K>,
+    list: &'a SkipListImpl<K>,
 }
 
 impl<'a, K: Ord + Debug + Default> SkipListIterator<'a, K> {
-    pub fn new(list: &'a SkipList<K>) -> Self {
+    pub fn new(list: &'a SkipListImpl<K>) -> Self {
         SkipListIterator { node: null_mut(), list }
     }
 
@@ -92,31 +94,25 @@ impl<'a, K: Ord + Debug + Default> SkipListIterator<'a, K> {
     }
 }
 
-pub struct SkipList<K: Ord + Debug + Default> {
+pub struct SkipListImpl<K: Ord + Debug + Default> {
     head: NonNull<Node<K>>,
     max_height: std::sync::atomic::AtomicUsize,
     rnd: StdRng,
     arena: Arena,
 }
 
-unsafe impl<K: Ord + Debug + Default + Send> Send for SkipList<K> {}
-unsafe impl<K: Ord + Debug + Default + Sync> Sync for SkipList<K> {}
+unsafe impl<K: Ord + Debug + Default + Send> Send for SkipListImpl<K> {}
+unsafe impl<K: Ord + Debug + Default + Sync> Sync for SkipListImpl<K> {}
 
-// impl<K: Ord + Debug + Default> Default for SkipList<K> {
-//     fn default() -> Self {
-//         Self::new()
-//     }
-// }
-
-impl<K: Ord + Debug + Default> SkipList<K> {
-    pub fn new(mut arena: Arena) -> SkipList<K> {
+impl<K: Ord + Debug + Default> SkipListImpl<K> {
+    pub fn new(mut arena: Arena) -> SkipListImpl<K> {
         let head = unsafe {
             let layout = std::alloc::Layout::new::<Node<K>>();
             let ptr = arena.allocate(layout.size()) as *mut Node<K>;
             ptr::write(ptr, Node::new(K::default(), MAX_HEIGHT));
             NonNull::new_unchecked(ptr)
         };
-        let mut s = SkipList {
+        let mut s = SkipListImpl {
             head,
             max_height: std::sync::atomic::AtomicUsize::new(1),
             rnd: StdRng::seed_from_u64(0xdeadbeef),
@@ -246,18 +242,55 @@ impl<K: Ord + Debug + Default> SkipList<K> {
     }
 }
 
+struct SkipList<K: Ord + Debug + Default> {
+    skip_list: Arc<UnsafeCell<SkipListImpl<K>>>,
+    write_lock: Mutex<()>,
+}
+
+unsafe impl<K: Ord + Debug + Default + Send + Sync> Send for SkipList<K> {}
+unsafe impl<K: Ord + Debug + Default + Send + Sync> Sync for SkipList<K> {}
+
+impl<K: Ord + Debug + Default> SkipList<K> {
+    pub fn new(arena: Arena) -> Self {
+        SkipList {
+            skip_list: Arc::new(UnsafeCell::new(SkipListImpl::new(arena))),
+            write_lock: Mutex::new(()),
+        }
+    }
+
+    pub fn insert(&self, key: K) {
+        let _guard = self.write_lock.lock().unwrap();
+        unsafe {
+            (*self.skip_list.get()).insert(key);
+        }
+    }
+
+    pub fn contains(&self, key: &K) -> bool {
+        unsafe {
+            (*self.skip_list.get()).contains(key)
+        }
+    }
+
+    pub fn iter(&self) -> SkipListIterator<K> {
+        unsafe {
+            SkipListIterator::new(&*self.skip_list.get())
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::{Arc, Condvar, Mutex};
     use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
     use std::thread;
+    use std::time::Duration;
     use rand::{random, Rng, SeedableRng};
     use crate::arena::Arena;
-    use super::{SkipList, SkipListIterator};
+    use super::{SkipListImpl, SkipListIterator, SkipList};
     #[test]
     fn test_empty() {
         let arena = Arena::new();
-        let list = super::SkipList::new(arena);
+        let list = super::SkipListImpl::new(arena);
         assert_eq!(list.contains(&10), false);
 
         let mut iter = SkipListIterator::new(&list);
@@ -277,7 +310,7 @@ mod tests {
         let mut rnd = rand::thread_rng();
         let mut keys = std::collections::btree_set::BTreeSet::new();
         let arena = Arena::new();
-        let mut list = super::SkipList::new(arena);
+        let mut list = SkipList::new(arena);
 
         for _ in 0..r {
             let key = rnd.gen_range(0..r);
@@ -296,7 +329,7 @@ mod tests {
         }
 
         {
-            let mut iter = SkipListIterator::new(&list);
+            let mut iter = list.iter();
             iter.seek_to_first();
             for i in 0..r {
                 if keys.contains(&i) {
@@ -309,7 +342,7 @@ mod tests {
         }
 
         {
-            let mut iter = SkipListIterator::new(&list);
+            let mut iter = list.iter();
             assert!(!iter.valid());
 
             iter.seek(&0);
@@ -327,7 +360,7 @@ mod tests {
 
         // Forward iteration test
         for i in 0..r {
-            let mut iter = SkipListIterator::new(&list);
+            let mut iter = list.iter();
             iter.seek(&i);
             let mut model_iter = keys.range(i..);
 
@@ -346,7 +379,7 @@ mod tests {
 
         // Backward iteration test
         {
-            let mut iter = SkipListIterator::new(&list);
+            let mut iter = list.iter();
             iter.seek_to_last();
 
             for k in keys.iter().rev() {
@@ -415,7 +448,7 @@ mod tests {
 
     struct ConcurrentTest {
         current: State,
-        list: SkipList<Key>,
+        list: SkipListImpl<Key>,
     }
 
     impl ConcurrentTest {
@@ -423,7 +456,7 @@ mod tests {
             let arena = Arena::new();
             ConcurrentTest {
                 current: State::new(),
-                list: SkipList::new(arena),
+                list: SkipListImpl::new(arena),
             }
         }
 
@@ -579,4 +612,56 @@ mod tests {
     fn concurrent_4() { run_concurrent(4); }
     #[test]
     fn concurrent_5() { run_concurrent(5); }
+
+    #[test]
+    fn test_concurrent_write() {
+        let arena = Arena::new();
+        let skiplist = Arc::new(SkipList::new(arena));
+        let mut write_handles = vec![];
+        for i in 0..5 {
+            let skiplist_clone = Arc::clone(&skiplist);
+            let handle = thread::spawn(move || {
+                let start = i * 100;
+                let end = start + 100;
+                for k in start..end {
+                    skiplist_clone.insert(k);
+                    println!("Thread {} inserted: {}", i, k);
+                }
+            });
+            write_handles.push(handle);
+        }
+
+        let mut read_handles = vec![];
+        for i in 0..3 {
+            let skiplist_clone = Arc::clone(&skiplist);
+            let handle = thread::spawn(move || {
+                let mut rng = rand::thread_rng();
+                let start = i * 100;
+                let end = start + 100;
+                for _ in start..end {
+                    let key = rng.gen_range(0..1000);
+                    let contains =  skiplist_clone.contains(&key);
+                    println!("Thread {} queried: {}, result: {}", i, key, contains);
+                    thread::sleep(Duration::from_millis(1));
+                }
+            });
+            read_handles.push(handle);
+        }
+
+        for handle in write_handles {
+            handle.join().unwrap();
+        }
+
+        for handle in read_handles {
+            handle.join().unwrap();
+        }
+
+        let mut iter = skiplist.iter();
+        iter.seek_to_first();
+        println!("Final SkipList contents:");
+        while iter.valid() {
+            println!("{:?}", iter.key());
+            iter.next();
+        }
+    }
 }

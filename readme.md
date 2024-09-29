@@ -1,12 +1,12 @@
 # Rust SkipList
 
 A Rust implementation of the SkipList data structure, inspired by LevelDB's SkipList. This project provides a
-concurrent, lock-free SkipList implementation that can be used for efficient key-value storage and retrieval.
+SkipList implementation with lock-free reads and locked writes, suitable for efficient key-value storage and retrieval.
 
 ## Features
 
-- Lock-free concurrent operations
-- Efficient insertion and lookup
+- Lock-free read operations
+- Efficient insertion (with locking) and lookup
 - Iterator support for traversal
 - Configurable maximum height and branching factor
 - Written in safe Rust with minimal unsafe code
@@ -27,33 +27,65 @@ Add this to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-skiplist-rust = "0.2.0"
+skiplist-rust = "0.3.0"
 ```
 
 Then you can use the SkipList in your Rust code:
 
 ```rust
-use skiplist_rust::SkipList;
+use skiplist_rust::{SkipList, SkipListIterator};
+use skiplist_rust::arena::Arena;
+use std::sync::Arc;
 
 fn main() {
     let arena = Arena::new();
-    let mut list = SkipList::new(arena);
-
-    // Insert some values
-    list.insert(5);
-    list.insert(2);
-    list.insert(8);
-
-    // Check if a value exists
-    assert!(list.contains(&5));
-    assert!(!list.contains(&3));
-
-    // Iterate over the list
-    let mut iter = SkipListIterator::new(&list);
-    while iter.valid() {
-        println!("Key: {}", iter.key());
-        iter.next();
+    let skiplist = Arc::new(SkipList::new(arena));
+    let mut write_handles = vec![];
+    for i in 0..5 {
+        let skiplist_clone = Arc::clone(&skiplist);
+        let handle = thread::spawn(move || {
+            let start = i * 100;
+            let end = start + 100;
+            for k in start..end {
+                skiplist_clone.insert(k);
+                println!("Thread {} inserted: {}", i, k);
+            }
+        });
+        write_handles.push(handle);
     }
+
+    let mut read_handles = vec![];
+    for i in 0..3 {
+        let skiplist_clone = Arc::clone(&skiplist);
+        let handle = thread::spawn(move || {
+            let mut rng = rand::thread_rng();
+            let start = i * 100;
+            let end = start + 100;
+            for _ in start..end {
+                let key = rng.gen_range(0..1000);
+                let contains =  skiplist_clone.contains(&key);
+                println!("Thread {} queried: {}, result: {}", i, key, contains);
+                thread::sleep(Duration::from_millis(1));
+            }
+        });
+        read_handles.push(handle);
+    }
+
+    for handle in write_handles {
+        handle.join().unwrap();
+    }
+
+    for handle in read_handles {
+        handle.join().unwrap();
+    }
+
+    let mut iter = skiplist.iter();
+    iter.seek_to_first();
+    println!("Final SkipList contents:");
+    while iter.valid() {
+        println!("{:?}", iter.key());
+        iter.next();
+    }    
 }
 ```
 
@@ -69,9 +101,20 @@ fn main() {
 ### `SkipList<K>`
 
 - `new(arena: Arena) -> SkipList<K>`: Create a new SkipList
-- `insert(key: K)`: Insert a key into the SkipList
-- `contains(&key: &K) -> bool`: Check if a key exists in the SkipList
-- `iter(&self) -> SkipListIterator<K>`: Get an iterator over the SkipList
+
+  Creates and returns a new `SkipList` instance using the provided memory arena.
+
+- `insert(key: K)`: Insert a key into the SkipList (requires locking)
+
+  Inserts the given key into the SkipList. This operation acquires a write lock to ensure thread-safe modification.
+
+- `contains(&key: &K) -> bool`: Check if a key exists in the SkipList (lock-free)
+
+  Checks whether the given key exists in the SkipList. This is a lock-free operation that allows concurrent reads.
+
+- `iter(&self) -> SkipListIterator<K>`: Get an iterator over the SkipList (lock-free)
+
+  Returns an iterator that can be used to traverse the elements in the SkipList. This operation is lock-free, allowing concurrent iteration with other operations.
 
 ### `SkipListIterator<K>`
 
@@ -87,7 +130,8 @@ fn main() {
 ## Performance
 
 This implementation aims to provide similar performance characteristics to LevelDB's SkipList. It uses atomic operations
-for concurrent access and a similar probabilistic balancing strategy.
+for concurrent read access and locking for write operations, providing a balance between concurrency and data
+consistency.
 
 ## Contributing
 
